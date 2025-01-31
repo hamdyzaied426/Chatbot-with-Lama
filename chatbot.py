@@ -60,7 +60,8 @@ def initialize_session_state():
         'embedder': SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2"),
         'model_ready': False,
         'model': None,
-        'tokenizer': None
+        'tokenizer': None,
+        'hf_token': None
     }
     
     for key, value in defaults.items():
@@ -122,37 +123,53 @@ def delete_chat(chat_id):
     conn.commit()
     conn.close()
 
-# Model loading and generation
-def load_model(model_name="gpt2"):
+# Gemma model handling
+def load_gemma_model(model_name="google/gemma-7b"):
     try:
-        st.session_state.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        st.session_state.model = AutoModelForCausalLM.from_pretrained(model_name)
-        st.session_state.tokenizer.pad_token = st.session_state.tokenizer.eos_token
+        if not st.session_state.hf_token:
+            raise ValueError("Hugging Face token required for Gemma models")
+            
+        st.session_state.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            token=st.session_state.hf_token
+        )
+        st.session_state.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            token=st.session_state.hf_token
+        )
         st.session_state.model_ready = True
         return True
     except Exception as e:
         st.error(f"Model loading failed: {str(e)}")
         return False
 
-def generate_response(prompt, history, max_length=200, temperature=0.7):
+def generate_response(prompt, history, max_length=512, temperature=0.7):
     if not st.session_state.model_ready:
         return "Model not loaded", False
 
     try:
-        # Create conversation history
-        conversation = "\n".join(
-            [f"{msg['role']}: {msg['content']}" for msg in history] + 
-            [f"user: {prompt}\nassistant:"]
+        conversation = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": msg["content"]} 
+            for i, msg in enumerate(history)
+        ]
+        
+        # Format for Gemma's chat template
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = st.session_state.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
         )
-
+        
         # Tokenize input
         inputs = st.session_state.tokenizer(
-            conversation,
+            formatted_prompt,
             return_tensors="pt",
-            max_length=512,
-            truncation=True,
-            padding=True
-        )
+            max_length=2048,
+            truncation=True
+        ).to("cuda")
 
         # Generate response
         outputs = st.session_state.model.generate(
@@ -165,11 +182,11 @@ def generate_response(prompt, history, max_length=200, temperature=0.7):
             num_return_sequences=1
         )
 
-        # Decode and clean response
+        # Decode response
         response = st.session_state.tokenizer.decode(
-            outputs[0],
+            outputs[0][len(inputs.input_ids[0]):], 
             skip_special_tokens=True
-        ).split("assistant:")[-1].strip()
+        )
 
         return response, True
 
@@ -181,21 +198,36 @@ def sidebar():
     with st.sidebar:
         st.header("Model Settings")
         
+        # Hugging Face token input
+        st.session_state.hf_token = st.text_input(
+            "Hugging Face Token",
+            type="password",
+            help="Required for Gemma models. Get yours at https://huggingface.co/settings/tokens"
+        )
+        
         model_name = st.selectbox(
-            "Choose Model",
-            ["gpt2", "EleutherAI/gpt-neo-1.3B", "facebook/opt-1.3b"],
+            "Gemma Model",
+            [
+                "google/gemma-7b",
+                "google/gemma-7b-it",
+                "google/gemma-2b",
+                "google/gemma-2b-it"
+            ],
             index=0
         )
         
         if st.button("Load Model"):
-            with st.spinner(f"Loading {model_name}..."):
-                if load_model(model_name):
-                    st.success("Model loaded successfully!")
-                else:
-                    st.error("Failed to load model")
+            if not st.session_state.hf_token:
+                st.error("Please enter a Hugging Face token first!")
+            else:
+                with st.spinner(f"Loading {model_name}..."):
+                    if load_gemma_model(model_name):
+                        st.success("Gemma loaded successfully!")
+                    else:
+                        st.error("Failed to load Gemma")
 
         temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-        max_length = st.slider("Max Response Length", 50, 500, 200, 50)
+        max_length = st.slider("Max Response Length", 50, 1024, 512, 50)
         
         st.divider()
         st.header("Chat Management")
@@ -226,11 +258,11 @@ def sidebar():
         return temperature, max_length
 
 def main_interface(temperature, max_length):
-    st.title("Open Source Chatbot")
+    st.title("Gemma Chatbot")
     
     # Model status
     status_color = "green" if st.session_state.model_ready else "red"
-    status_text = "● Model Loaded" if st.session_state.model_ready else "● Model Not Loaded"
+    status_text = "● Gemma Ready" if st.session_state.model_ready else "● Model Not Loaded"
     st.markdown(f"**Status**: <span style='color:{status_color}'>{status_text}</span>", unsafe_allow_html=True)
 
     # Load current chat
