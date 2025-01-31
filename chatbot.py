@@ -5,7 +5,7 @@ import pickle
 import datetime
 import torch
 from collections import Counter
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from sentence_transformers import SentenceTransformer
 
 # Database configuration
@@ -123,14 +123,10 @@ def delete_chat(chat_id):
     conn.close()
 
 # Model handling
-def load_model(model_name="mistralai/Mistral-7B-v0.1"):
+def load_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
     try:
         st.session_state.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        st.session_state.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map="auto",
-            torch_dtype=torch.bfloat16
-        )
+        st.session_state.model = AutoModelForCausalLM.from_pretrained(model_name)
         st.session_state.model_ready = True
         return True
     except Exception as e:
@@ -142,39 +138,21 @@ def generate_response(prompt, history, max_length=512, temperature=0.7):
         return "Model not loaded", False
 
     try:
-        # Format conversation history
-        messages = [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": msg["content"]}
-            for i, msg in enumerate(history)
-        ]
-        messages.append({"role": "user", "content": prompt})
-        
-        # Create instruction format
-        formatted_prompt = st.session_state.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        # Tokenize input
         inputs = st.session_state.tokenizer(
-            formatted_prompt,
+            f"### User: {prompt}\n### Assistant:",
             return_tensors="pt",
-            max_length=4096,
+            max_length=1024,
             truncation=True
-        ).to("cuda")
+        )
 
-        # Generate response
         outputs = st.session_state.model.generate(
             inputs.input_ids,
-            max_length=max_length,
+            max_new_tokens=max_length,
             temperature=temperature,
-            top_p=0.95,
             do_sample=True,
             pad_token_id=st.session_state.tokenizer.eos_token_id
         )
 
-        # Decode response
         response = st.session_state.tokenizer.decode(
             outputs[0][len(inputs.input_ids[0]):], 
             skip_special_tokens=True
@@ -193,9 +171,9 @@ def sidebar():
         model_name = st.selectbox(
             "Select Model",
             [
-                "mistralai/Mistral-7B-v0.1",
-                "HuggingFaceH4/zephyr-7b-beta",
-                "togethercomputer/RedPajama-INCITE-7B-Chat"
+                "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                "EleutherAI/gpt-neo-125M",
+                "facebook/opt-1.3b"
             ],
             index=0
         )
@@ -208,7 +186,7 @@ def sidebar():
                     st.error("Failed to load model")
 
         temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-        max_length = st.slider("Max Response Length", 50, 2048, 512, 50)
+        max_length = st.slider("Max Response Length", 50, 1024, 512, 50)
         
         st.divider()
         st.header("Chat Management")
