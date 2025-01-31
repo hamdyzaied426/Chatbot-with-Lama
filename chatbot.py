@@ -57,7 +57,7 @@ def initialize_session_state():
         'index': faiss.IndexFlatIP(384),
         'cache': {},
         'embedder': SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2"),
-        'ollama_status': 'unknown'
+        'ollama_status': {}
     }
     
     for key, value in defaults.items():
@@ -119,20 +119,52 @@ def delete_chat(chat_id):
     conn.commit()
     conn.close()
 
-# Ollama integration with enhanced error handling
-def check_ollama_status():
+# Enhanced Ollama connection handling
+def check_ollama_connection():
+    """Check Ollama service status with detailed diagnostics"""
     try:
-        response = requests.get("http://localhost:11434/", timeout=5)
-        return "connected" if response.status_code == 200 else "disconnected"
-    except:
-        return "disconnected"
+        # Basic connectivity check
+        ping_response = requests.get("http://localhost:11434/", timeout=5)
+        if ping_response.status_code != 200:
+            return {
+                "connected": False,
+                "error": f"Unexpected status code: {ping_response.status_code}"
+            }
+
+        # Model availability check
+        models_response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        models_data = models_response.json()
+        models = [m["name"] for m in models_data.get("models", [])]
+        
+        return {
+            "connected": True,
+            "model_available": "llama3.2" in models,
+            "models": models,
+            "model_details": models_data
+        }
+        
+    except requests.exceptions.ConnectionError:
+        return {"connected": False, "error": "Connection refused - Is Ollama running?"}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
 
 def generate_response(prompt, history, temperature=0.7):
-    st.session_state.ollama_status = check_ollama_status()
+    """Enhanced response generation with detailed error handling"""
+    connection_status = check_ollama_connection()
+    st.session_state.ollama_status = connection_status
     
-    if st.session_state.ollama_status != "connected":
-        return "Error: Ollama service unavailable. Please ensure Ollama is running.", False
-    
+    if not connection_status["connected"]:
+        error_msg = f"Ollama Connection Error: {connection_status.get('error', 'Unknown error')}"
+        st.toast("🔴 Connection Failed", icon="❌")
+        return error_msg, False
+        
+    if not connection_status.get("model_available", False):
+        st.toast("🟠 Model Missing", icon="⚠️")
+        return (
+            f"Model 'llama3.2' not found. Available models: {', '.join(connection_status['models'])}\n"
+            "Install with: `ollama pull llama3.2`", False
+        )
+
     try:
         formatted_history = "\n".join(
             [f"{msg['role']}: {msg['content']}" for msg in history]
@@ -153,9 +185,10 @@ def generate_response(prompt, history, temperature=0.7):
         return response.json()["response"], True
         
     except requests.exceptions.RequestException as e:
-        return f"Connection error: {str(e)}", False
+        st.toast("🔴 Generation Failed", icon="❌")
+        return f"API Error: {str(e)}", False
     except Exception as e:
-        return f"Unexpected error: {str(e)}", False
+        return f"Unexpected Error: {str(e)}", False
 
 # UI components
 def sidebar():
@@ -192,10 +225,40 @@ def sidebar():
 def main_interface():
     st.title("Chatbot with Ollama")
     
-    # Connection status indicator
-    status_color = "green" if st.session_state.ollama_status == "connected" else "red"
-    st.markdown(f"Ollama Status: <span style='color:{status_color}'>●</span>", unsafe_allow_html=True)
+    # Connection status display
+    connection_status = st.session_state.ollama_status
+    status_color = "green" if connection_status.get("connected", False) else "red"
+    status_text = "● Connected" if connection_status.get("connected", False) else "● Disconnected"
     
+    st.markdown(f"""
+    **Ollama Status**: <span style='color:{status_color}'>{status_text}</span>  
+    {f"**Available Models**: {', '.join(connection_status.get('models', []))}" if connection_status.get("connected", False) else ""}
+    """, unsafe_allow_html=True)
+
+    # Show troubleshooting guide if needed
+    if not connection_status.get("connected", True):
+        with st.expander("🔍 Troubleshooting Guide", expanded=True):
+            st.markdown("""
+            ### Connection Issues Detected
+            1. **Start Ollama Service**  
+               Run in a terminal:  
+               ```bash
+               ollama serve
+               ```
+            2. **Verify Installation**  
+               Check version:  
+               ```bash
+               ollama --version
+               ```
+            3. **Check Port Access**  
+               Ensure port 11434 is allowed through your firewall
+            4. **Validate Model Installation**  
+               List installed models:  
+               ```bash
+               ollama list
+               ```
+            """)
+
     # Load current chat
     messages = []
     if st.session_state.current_chat_id:
@@ -248,5 +311,6 @@ def main_interface():
 if __name__ == "__main__":
     initialize_db()
     initialize_session_state()
+    check_ollama_connection()  # Initial connection check
     sidebar()
     main_interface()
