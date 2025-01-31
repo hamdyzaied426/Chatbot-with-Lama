@@ -1,25 +1,67 @@
 # 🗨️ Chatbot with Ollama, FAISS, and Streamlit
 
-A **conversational AI chatbot** built with **Streamlit**, powered by **Ollama's LLaMA model** for AI responses. It uses **FAISS** for fast similarity search and **SQLite** for chat history management. 🚀  
+![Chatbot Architecture Diagram](https://via.placeholder.com/800x400.png?text=Architecture+Diagram) <!-- Replace with actual diagram -->
 
-## 🔥 Features
-- **Conversational AI** using Ollama's LLaMA model
-- **FAISS-based caching** for quick response retrieval
-- **Chat history storage** with SQLite (supports multiple conversations)
-- **Streamlit UI** for easy interaction
-- **Auto-generated chat titles** based on user queries
+A conversational AI chatbot with persistent memory and semantic caching, powered by Ollama's LLMs.
 
-## 📦 Installation & Setup
-### 1️⃣ Clone the Repository
+## 🌟 Features
+| Feature                | Technology Used       | Benefit                              |
+|------------------------|-----------------------|--------------------------------------|
+| AI Responses           | Ollama (LLaMA3.2)     | Local, privacy-first AI processing   |
+| Chat History           | SQLite                | Persistent conversation storage      |
+| Response Cache         | FAISS                 | Instant answer retrieval             |
+| UI Interface           | Streamlit             | User-friendly web interface          |
+| Semantic Search        | Sentence Transformers | Context-aware response matching      |
+
+## 📦 Installation
 ```bash
-git clone https://github.com/your-username/your-repo-name.git
-cd your-repo-name
-2️⃣ Create a Virtual Environment (Optional but Recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows, use 'venv\Scripts\activate'
-3️⃣ Install Dependencies
-pip install -r requirements.txt
-4️⃣ Run the App
-streamlit run app.py
+# Clone repository
+git clone https://github.com/yourusername/chatbot.git
+cd chatbot
 
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start Ollama (in separate terminal)
+ollama serve
+
+🚀 Usage
+streamlit run app.py
+🧠 Code Structure
+.
+├── app.py                 # Main Streamlit application
+├── chat_history.db        # SQLite database (auto-created)
+├── requirements.txt       # Dependency list
+└── README.md              # This documentation
+
+🔧 Components
+1.User Interface (Streamlit)
+
+  Chat input panel
+  
+  Sidebar with chat history
+
+  Temperature control
+  
+2.AI Backend (Ollama)
+
+  Local LLM inference
+  
+  Context-aware generation
+  
+3.Memory System
+
+  SQLite for conversation history
+
+  FAISS vector cache
+
+4.Semantic Search
+
+  Sentence Transformers
+  
+  Similarity threshold: 0.6
 
