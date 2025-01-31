@@ -1,10 +1,11 @@
 import streamlit as st
-import requests
 import faiss
 import sqlite3
 import pickle
 import datetime
+import torch
 from collections import Counter
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from sentence_transformers import SentenceTransformer
 
 # Database configuration
@@ -57,7 +58,9 @@ def initialize_session_state():
         'index': faiss.IndexFlatIP(384),
         'cache': {},
         'embedder': SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2"),
-        'ollama_status': {}
+        'model_ready': False,
+        'model': None,
+        'tokenizer': None
     }
     
     for key, value in defaults.items():
@@ -119,89 +122,87 @@ def delete_chat(chat_id):
     conn.commit()
     conn.close()
 
-# Enhanced Ollama connection handling
-def check_ollama_connection():
-    """Check Ollama service status with detailed diagnostics"""
+# Model loading and generation
+def load_model(model_name="gpt2"):
     try:
-        # Basic connectivity check
-        ping_response = requests.get("http://localhost:11434/", timeout=5)
-        if ping_response.status_code != 200:
-            return {
-                "connected": False,
-                "error": f"Unexpected status code: {ping_response.status_code}"
-            }
-
-        # Model availability check
-        models_response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        models_data = models_response.json()
-        models = [m["name"] for m in models_data.get("models", [])]
-        
-        return {
-            "connected": True,
-            "model_available": "llama3.2" in models,
-            "models": models,
-            "model_details": models_data
-        }
-        
-    except requests.exceptions.ConnectionError:
-        return {"connected": False, "error": "Connection refused - Is Ollama running?"}
+        st.session_state.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        st.session_state.model = AutoModelForCausalLM.from_pretrained(model_name)
+        st.session_state.tokenizer.pad_token = st.session_state.tokenizer.eos_token
+        st.session_state.model_ready = True
+        return True
     except Exception as e:
-        return {"connected": False, "error": str(e)}
+        st.error(f"Model loading failed: {str(e)}")
+        return False
 
-def generate_response(prompt, history, temperature=0.7):
-    """Enhanced response generation with detailed error handling"""
-    connection_status = check_ollama_connection()
-    st.session_state.ollama_status = connection_status
-    
-    if not connection_status["connected"]:
-        error_msg = f"Ollama Connection Error: {connection_status.get('error', 'Unknown error')}"
-        st.toast("🔴 Connection Failed", icon="❌")
-        return error_msg, False
-        
-    if not connection_status.get("model_available", False):
-        st.toast("🟠 Model Missing", icon="⚠️")
-        return (
-            f"Model 'llama3.2' not found. Available models: {', '.join(connection_status['models'])}\n"
-            "Install with: `ollama pull llama3.2`", False
-        )
+def generate_response(prompt, history, max_length=200, temperature=0.7):
+    if not st.session_state.model_ready:
+        return "Model not loaded", False
 
     try:
-        formatted_history = "\n".join(
-            [f"{msg['role']}: {msg['content']}" for msg in history]
+        # Create conversation history
+        conversation = "\n".join(
+            [f"{msg['role']}: {msg['content']}" for msg in history] + 
+            [f"user: {prompt}\nassistant:"]
         )
-        full_prompt = f"{formatted_history}\nuser: {prompt}\nassistant:"
-        
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3.2",
-                "prompt": full_prompt,
-                "stream": False,
-                "options": {"temperature": temperature}
-            },
-            timeout=30
+
+        # Tokenize input
+        inputs = st.session_state.tokenizer(
+            conversation,
+            return_tensors="pt",
+            max_length=512,
+            truncation=True,
+            padding=True
         )
-        response.raise_for_status()
-        return response.json()["response"], True
-        
-    except requests.exceptions.RequestException as e:
-        st.toast("🔴 Generation Failed", icon="❌")
-        return f"API Error: {str(e)}", False
+
+        # Generate response
+        outputs = st.session_state.model.generate(
+            inputs.input_ids,
+            max_length=max_length,
+            temperature=temperature,
+            do_sample=True,
+            top_k=50,
+            top_p=0.95,
+            num_return_sequences=1
+        )
+
+        # Decode and clean response
+        response = st.session_state.tokenizer.decode(
+            outputs[0],
+            skip_special_tokens=True
+        ).split("assistant:")[-1].strip()
+
+        return response, True
+
     except Exception as e:
-        return f"Unexpected Error: {str(e)}", False
+        return f"Generation error: {str(e)}", False
 
 # UI components
 def sidebar():
     with st.sidebar:
+        st.header("Model Settings")
+        
+        model_name = st.selectbox(
+            "Choose Model",
+            ["gpt2", "EleutherAI/gpt-neo-1.3B", "facebook/opt-1.3b"],
+            index=0
+        )
+        
+        if st.button("Load Model"):
+            with st.spinner(f"Loading {model_name}..."):
+                if load_model(model_name):
+                    st.success("Model loaded successfully!")
+                else:
+                    st.error("Failed to load model")
+
+        temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
+        max_length = st.slider("Max Response Length", 50, 500, 200, 50)
+        
+        st.divider()
         st.header("Chat Management")
         
         if st.button("➕ New Chat"):
             st.session_state.current_chat_id = create_chat()
             st.rerun()
-        
-        st.divider()
-        st.header("Model Settings")
-        temperature = st.slider("Temperature", 0.0, 2.0, 0.3, 0.1)
         
         st.divider()
         st.header("Chat History")
@@ -221,43 +222,16 @@ def sidebar():
                     st.rerun()
         
         conn.close()
+        
+        return temperature, max_length
 
-def main_interface():
-    st.title("Chatbot with Ollama")
+def main_interface(temperature, max_length):
+    st.title("Open Source Chatbot")
     
-    # Connection status display
-    connection_status = st.session_state.ollama_status
-    status_color = "green" if connection_status.get("connected", False) else "red"
-    status_text = "● Connected" if connection_status.get("connected", False) else "● Disconnected"
-    
-    st.markdown(f"""
-    **Ollama Status**: <span style='color:{status_color}'>{status_text}</span>  
-    {f"**Available Models**: {', '.join(connection_status.get('models', []))}" if connection_status.get("connected", False) else ""}
-    """, unsafe_allow_html=True)
-
-    # Show troubleshooting guide if needed
-    if not connection_status.get("connected", True):
-        with st.expander("🔍 Troubleshooting Guide", expanded=True):
-            st.markdown("""
-            ### Connection Issues Detected
-            1. **Start Ollama Service**  
-               Run in a terminal:  
-               ```bash
-               ollama serve
-               ```
-            2. **Verify Installation**  
-               Check version:  
-               ```bash
-               ollama --version
-               ```
-            3. **Check Port Access**  
-               Ensure port 11434 is allowed through your firewall
-            4. **Validate Model Installation**  
-               List installed models:  
-               ```bash
-               ollama list
-               ```
-            """)
+    # Model status
+    status_color = "green" if st.session_state.model_ready else "red"
+    status_text = "● Model Loaded" if st.session_state.model_ready else "● Model Not Loaded"
+    st.markdown(f"**Status**: <span style='color:{status_color}'>{status_text}</span>", unsafe_allow_html=True)
 
     # Load current chat
     messages = []
@@ -291,7 +265,7 @@ def main_interface():
         if cached_response:
             response = cached_response
         else:
-            response, success = generate_response(prompt, messages)
+            response, success = generate_response(prompt, messages, max_length, temperature)
             if success:
                 embedding = st.session_state.embedder.encode(prompt).reshape(1, -1).astype('float32')
                 st.session_state.index.add(embedding)
@@ -311,6 +285,5 @@ def main_interface():
 if __name__ == "__main__":
     initialize_db()
     initialize_session_state()
-    check_ollama_connection()  # Initial connection check
-    sidebar()
-    main_interface()
+    temp, length = sidebar()
+    main_interface(temp, length)
